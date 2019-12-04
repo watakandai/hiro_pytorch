@@ -43,7 +43,7 @@ class HiroTrainer():
             high_buffer_freq=10,            # TODO: Need to experiment
             low_train_freq=1,
             high_train_freq=10,
-            log_path='logs/hiro_pytorch20191125'):
+            log_path='logs/hiro_pytorch20191202'):
         self.env = env
         self.args = args
         self.buffer_size = buffer_size 
@@ -112,6 +112,7 @@ class HiroTrainer():
                     n_low_goal = self.agent.high_con.policy(n_s, final_goal)
                 else:
                     n_low_goal = self.agent.subgoal_transition(s, low_goal, n_s)
+                #n_low_goal = self.agent.augment_with_noise(n_low_goal, self.agent.high_sigma)
 
                 low_r = self.agent.low_reward(s, low_goal, n_s)
 
@@ -131,12 +132,13 @@ class HiroTrainer():
                 s = n_s
                 low_goal = n_low_goal
                 if e >= self.initial_episodes:
-                    losses = self.agent.train(self.step)
+                    self.agent.train(self.step)
+                    #losses = self.agent.train(self.step)
 
-                self.low_critic_loss += losses[0] 
-                self.low_actor_loss += losses[1] 
-                self.high_critic_loss += losses[2] 
-                self.high_actor_loss += losses[3]
+ #               self.low_critic_loss += losses[0] 
+  #              self.low_actor_loss += losses[1] 
+   #             self.high_critic_loss += losses[2] 
+    #            self.high_actor_loss += losses[3]
                 self.action_logs.append(a)
                 
             self.end_episode()
