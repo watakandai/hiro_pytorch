@@ -1,11 +1,11 @@
 import argparse
-import os 
+import os
 import time
 import random
 from collections import deque
 from PIL import Image
 import matplotlib.pyplot as plt
-import numpy as np 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
@@ -36,10 +36,10 @@ class Agent():
     def policy(self, s, epsilon=None):
         if epsilon is None:
             epsilon = self.epsilon
-        
+
         if np.random.random() < epsilon:
             a = np.random.randint(len(self.actions))
-            return torch.tensor([a], device=device), 0 
+            return torch.tensor([a], device=device), 0
 
         return self.predict(s)
 
@@ -47,7 +47,7 @@ class Agent():
         with torch.no_grad():
             max_q = self.net(s.unsqueeze(0)).max(1)
             return max_q[1], max_q[0].item()
-    
+
     def save(self):
         torch.save(self.net.state_dict(), self.model_path)
 
@@ -84,7 +84,7 @@ class Experience():
         self.d = d
 
 class ReplayBuffer():
-    def __init__(self, buffer_size, batch_size=32):
+    def __init__(self, buffer_size, batch_size=100):
         self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.experiences = deque(maxlen=buffer_size)
@@ -105,14 +105,14 @@ class Observer():
     @property
     def action_space(self):
         return self._env.action_space
-    
+
     @property
     def observation_space(self):
         return self._env.action_space
 
     def reset(self):
         return self.transform(self._env.reset())
-        
+
     def render(self, mode="human"):
         self._env.render(mode=mode)
 
@@ -122,36 +122,36 @@ class Observer():
         return self.transform(n_state), reward, done, info
 
     def transform(self, state):
-        raise NotImplementedError()    
+        raise NotImplementedError()
 
 class Epsilon():
     def __init__(self, initial_epsilon, end_epsilon, episodes):
         self.initial_epsilon = initial_epsilon
         self.end_epsilon = end_epsilon
         self.episodes = episodes
-    
+
     def step(self, episode):
         raise NotImplementedError()
 
 
 class Trainer():
-    def __init__(self, 
+    def __init__(self,
             env,
             init_eps,
             end_eps,
-            buffer_size, 
-            batch_size, 
-            gamma, 
+            buffer_size,
+            batch_size,
+            gamma,
             lr,
             episodes,
-            print_freq, 
-            writer_freq, 
+            print_freq,
+            writer_freq,
             target_network_freq,
             log_path):
         self.env = env
-        self.init_eps = init_eps 
-        self.end_eps = end_eps 
-        self.buffer_size = buffer_size 
+        self.init_eps = init_eps
+        self.end_eps = end_eps
+        self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.gamma = gamma
         self.lr = lr
