@@ -2,36 +2,25 @@
 # @copyright Kandai Watanabe
 # @email kandai.wata@gmail.com
 # @institute University of Colorado Boulder
-# 
-# NN Models for HIRO 
+#
+# NN Models for HIRO
 # (Data-Efficient Hierarchical Reinforcement Learning)
 # Parameters can be find in the original paper
-import os 
+import os
 import copy
 import time
-import numpy as np 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .nn_rl import Agent, ReplayBuffer
+from .utils import get_tensor
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def var(tensor):
-    if torch.cuda.is_available():
-        return tensor.cuda()
-    else:
-        return tensor
-
-def get_tensor(z):
-    if len(z.shape) == 1:
-        return var(torch.FloatTensor(z.copy())).unsqueeze(0)
-    else:
-        return var(torch.FloatTensor(z.copy()))
-
-class Actor(nn.Module):
+class TD3Actor(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim, scale):
-        super(Actor, self).__init__()
+        super(TD3Actor, self).__init__()
         if scale is None:
             scale = torch.ones(state_dim)
         else:
@@ -41,15 +30,15 @@ class Actor(nn.Module):
         self.l1 = nn.Linear(state_dim + goal_dim, 300)
         self.l2 = nn.Linear(300, 300)
         self.l3 = nn.Linear(300, action_dim)
-        
+
     def forward(self, state, goal):
         a = F.relu(self.l1(torch.cat([state, goal], 1)))
         a = F.relu(self.l2(a))
         return self.scale * torch.tanh(self.l3(a))
 
-class Critic(nn.Module):
+class TD3Critic(nn.Module):
     def __init__(self, state_dim, goal_dim, action_dim):
-        super(Critic, self).__init__()
+        super(TD3Critic, self).__init__()
         # Q1
         self.l1 = nn.Linear(state_dim + goal_dim + action_dim, 300)
         self.l2 = nn.Linear(300, 300)
@@ -68,7 +57,7 @@ class Critic(nn.Module):
 
         return q
 
-class HigherController():
+class TD3():
     def __init__(
         self,
         state_dim,
@@ -89,28 +78,25 @@ class HigherController():
         self.action_dim = action_dim
         self.model_path = model_path
         self.scale = scale
+
+        self.actor = TD3Actor(state_dim, goal_dim, action_dim, scale=scale).to(device)
+        self.actor_target = TD3Actor(state_dim, goal_dim, action_dim, scale=scale).to(device)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
+
+        self.critic1 = TD3Critic(state_dim, goal_dim, action_dim).to(device)
+        self.critic2 = TD3Critic(state_dim, goal_dim, action_dim).to(device)
+        self.critic1_target = TD3Critic(state_dim, goal_dim, action_dim).to(device)
+        self.critic2_target = TD3Critic(state_dim, goal_dim, action_dim).to(device)
+        self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr, weight_decay=0.0001)
+        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr, weight_decay=0.0001)
+
         self.policy_noise = policy_noise
         self.noise_clip = noise_clip
         self.gamma = gamma
         self.policy_freq = policy_freq
         self.tau = tau
 
-        self.actor = Actor(state_dim, goal_dim, action_dim, scale=scale).to(device)
-        self.actor_target = Actor(state_dim, goal_dim, action_dim, scale=scale).to(device)
-        self.actor_target.eval()
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
-        
-        self.critic1 = Critic(state_dim, goal_dim, action_dim).to(device)
-        self.critic2 = Critic(state_dim, goal_dim, action_dim).to(device)
-        self.critic1_target = Critic(state_dim, goal_dim, action_dim).to(device)
-        self.critic2_target = Critic(state_dim, goal_dim, action_dim).to(device)
-        self.critic1_target.eval()
-        self.critic2_target.eval()
-        self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr, weight_decay=0.0001)
-        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr, weight_decay=0.0001)
-
         self._initialize_target_networks()
-
         self.total_it = 0
 
     def _initialize_target_networks(self):
@@ -121,24 +107,52 @@ class HigherController():
     def _update_target_network(self, target, origin, tau):
         for target_param, origin_param in zip(target.parameters(), origin.parameters()):
             target_param.data.copy_(tau * origin_param.data + (1.0 - tau) * target_param.data)
-                    
+
     def save(self):
         if not os.path.exists(os.path.dirname(self.model_path)):
             os.mkdir(os.path.dirname(self.model_path))
-        torch.save(self.actor.state_dict(), self.model_path+"_high_actor")
-        torch.save(self.actor_optimizer.state_dict(), self.model_path+"_high_actor_optimizer")
-        torch.save(self.critic1.state_dict(), self.model_path+"_high_critic1")
-        torch.save(self.critic2.state_dict(), self.model_path+"_high_critic2")
-        torch.save(self.critic1_optimizer.state_dict(), self.model_path+"_high_critic1_optimizer")
-        torch.save(self.critic2_optimizer.state_dict(), self.model_path+"_high_critic2_optimizer")
+        torch.save(self.actor.state_dict(), self.model_path+"_actor")
+        torch.save(self.actor_optimizer.state_dict(), self.model_path+"_actor_optimizer")
+        torch.save(self.critic1.state_dict(), self.model_path+"_critic1")
+        torch.save(self.critic2.state_dict(), self.model_path+"_critic2")
+        torch.save(self.critic1_optimizer.state_dict(), self.model_path+"_critic1_optimizer")
+        torch.save(self.critic2_optimizer.state_dict(), self.model_path+"_critic2_optimizer")
 
     def load(self):
-        self.actor.load_state_dict(torch.load(self.model_path+"_high_actor"))
-        self.actor_optimizer.load_state_dict(torch.load(self.model_path+"_high_actor_optimizer"))
-        self.critic1.load_state_dict(torch.load(self.model_path+"_high_critic1"))
-        self.critic2.load_state_dict(torch.load(self.model_path+"_high_critic2"))
-        self.critic1_optimizer.load_state_dict(torch.load(self.model_path+"_high_critic1_optimizer"))
-        self.critic2_optimizer.load_state_dict(torch.load(self.model_path+"_high_critic2_optimizer"))
+        self.actor.load_state_dict(torch.load(self.model_path+"_actor"))
+        self.actor_optimizer.load_state_dict(torch.load(self.model_path+"_actor_optimizer"))
+        self.critic1.load_state_dict(torch.load(self.model_path+"_critic1"))
+        self.critic2.load_state_dict(torch.load(self.model_path+"_critic2"))
+        self.critic1_optimizer.load_state_dict(torch.load(self.model_path+"_critic1_optimizer"))
+        self.critic2_optimizer.load_state_dict(torch.load(self.model_path+"_critic2_optimizer"))
+
+    # TODO: policy_with_noise
+    def policy(self, state, goal, to_numpy=True):
+        state = get_tensor(state)
+        goal = get_tensor(goal)
+
+        if to_numpy:
+            return self.actor(state, goal).cpu().data.numpy().squeeze()
+        else:
+            return self.actor(state, goal).squeeze()
+
+class HigherController(TD3):
+    def __init__(
+        self,
+        state_dim,
+        goal_dim,
+        action_dim,
+        scale,
+        model_path,
+        actor_lr=0.0001,
+        critic_lr=0.001,
+        policy_noise=0.2,
+        noise_clip=0.5,
+        gamma=0.99,
+        policy_freq=2,
+        tau=0.005):
+        super(HigherController, self).__init__()
+        self.model_path = self.model_path + '_high'
 
     def off_policy_corrections(self, low_con, batch_size, low_goals, states, actions, candidate_goals=8):
         first_s = [s[0] for s in states] # First x
@@ -192,35 +206,18 @@ class HigherController():
 
         return candidates[np.arange(batch_size), max_indices]
 
-    def update(self, experiences, low_con):
+    def update(self, replay_buffer, low_con):
         self.total_it += 1
 
-        # state, goal, action, reward, next_state, done, next_states_betw, actions_betw
-        states = np.array([e[0] for e in experiences if e is not None])
-        goals = np.array([e[1] for e in experiences if e is not None])
-        low_goals = np.array([e[2] for e in experiences if e is not None])
-        rewards = np.array([e[3] for e in experiences if e is not None])
-        n_states = np.array([e[4] for e in experiences if e is not None])
-        not_done = np.array([1-e[5] for e in experiences if e is not None])
-        states_accum = np.array([e[6] for e in experiences if e is not None])
-        actions_accum = np.array([e[7] for e in experiences if e is not None])
-
-        low_goals = self.off_policy_corrections(low_con, len(experiences), low_goals, states_accum, actions_accum)
-
-        states = torch.from_numpy(states).float().to(device)
-        goals = torch.from_numpy(goals).float().to(device)
-        low_goals = torch.from_numpy(low_goals).float().to(device)
-        rewards = torch.from_numpy(rewards).float().to(device)
-        n_states = torch.from_numpy(n_states).float().to(device)
-        not_done = torch.from_numpy(not_done).float().to(device)
-        states_accum = torch.from_numpy(states_accum).float().to(device)
-        actions_accum = torch.from_numpy(actions_accum).float().to(device)
+        states, goals, actions, rewards, n_states, done, states_betw, actions_betw = replay_buffer.sample()
+        # n_goals = goals
+        actions = self.off_policy_corrections(low_con, replay_buffer.batch_size, actions, states_betw, actions_betw)
 
         with torch.no_grad():
             noise = (
-                torch.randn_like(low_goals) * self.policy_noise
+                torch.randn_like(actions) * self.policy_noise
             ).clamp(-self.noise_clip, self.noise_clip)
-	
+
             n_actions = self.actor_target(n_states, goals) + noise
             n_actions = torch.min(n_actions,  self.actor.scale)
             n_actions = torch.max(n_actions, -self.actor.scale)
@@ -231,8 +228,8 @@ class HigherController():
             target_Q = rewards + not_done * self.gamma * target_Q
             target_Q_detached = target_Q.detach()
 
-        current_Q1 = self.critic1(states, goals, low_goals)
-        current_Q2 = self.critic2(states, goals, low_goals)
+        current_Q1 = self.critic1(states, goals, actions)
+        current_Q2 = self.critic2(states, goals, actions)
 
         critic1_loss = F.mse_loss(current_Q1, target_Q_detached)
         critic2_loss = F.mse_loss(current_Q2, target_Q_detached)
@@ -245,30 +242,37 @@ class HigherController():
         self.critic2_optimizer.step()
 
         if self.total_it % self.policy_freq == 0:
-            actions = self.actor(states, goals)
-            Q1 = self.critic1(states, goals, actions)
+            a = self.actor(states, goals)
+            Q1 = self.critic1(states, goals, a)
             actor_loss = -Q1.mean()
 
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
-            
+
             self._update_target_network(self.critic1_target, self.critic1, self.tau)
             self._update_target_network(self.critic2_target, self.critic2, self.tau)
             self._update_target_network(self.actor_target, self.actor, self.tau)
 
-    def policy(self, state, goal, to_numpy=True):
-        state = get_tensor(state)
-        goal = get_tensor(goal)
+    def compute_target_Q(self, actions, goals, n_states)
+        with torch.no_grad():
+            noise = (
+                torch.randn_like(actions) * self.policy_noise
+            ).clamp(-self.noise_clip, self.noise_clip)
 
-        if to_numpy:
-            return self.actor(state, goal).cpu().data.numpy().squeeze()
-        else:
-            return self.actor(state, goal).squeeze()
-                
+            n_actions = self.actor_target(n_states, goals) + noise
+            n_actions = torch.min(n_actions,  self.actor.scale)
+            n_actions = torch.max(n_actions, -self.actor.scale)
+
+            target_Q1 = self.critic1_target(n_states, goals, n_actions)
+            target_Q2 = self.critic2_target(n_states, goals, n_actions)
+            target_Q = torch.min(target_Q1, target_Q2)
+            target_Q = rewards + not_done * self.gamma * target_Q
+            target_Q_detached = target_Q.detach()
+
 class LowerController():
     def __init__(
-        self, 
+        self,
         state_dim,
         goal_dim,
         action_dim,
@@ -296,7 +300,7 @@ class LowerController():
         self.actor_target = Actor(state_dim, goal_dim, action_dim, scale=scale).to(device)
         self.actor_target.eval()
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
-        
+
         self.critic1 = Critic(state_dim, goal_dim, action_dim).to(device)
         self.critic2= Critic(state_dim, goal_dim, action_dim).to(device)
         self.critic1_target = Critic(state_dim, goal_dim, action_dim).to(device)
@@ -336,7 +340,7 @@ class LowerController():
         self.critic2_optimizer.load_state_dict(torch.load(self.model_path+"_low_critic2_optimizer"))
         self.actor.load_state_dict(torch.load(self.model_path+"_low_actor"))
         self.actor_optimizer.load_state_dict(torch.load(self.model_path+"_low_actor_optimizer"))
-        
+
     def update(self, experiences):
         self.total_it += 1
 
@@ -436,21 +440,21 @@ class HiroAgent():
         self.low_goal_dim = man_scale.shape[0]
 
         self.high_con = HigherController(
-            state_dim=state_dim, 
-            goal_dim=goal_dim, 
-            action_dim=self.low_goal_dim, 
-            scale=man_scale, 
+            state_dim=state_dim,
+            goal_dim=goal_dim,
+            action_dim=self.low_goal_dim,
+            scale=man_scale,
             model_path=model_path
             )
         self.low_con = LowerController(
-            state_dim=state_dim, 
-            goal_dim=self.low_goal_dim, 
-            action_dim=action_dim, 
-            scale=self.max_action, 
+            state_dim=state_dim,
+            goal_dim=self.low_goal_dim,
+            action_dim=action_dim,
+            scale=self.max_action,
             model_path=model_path
             )
-        self.high_replay_buffer = ReplayBuffer(buffer_size, batch_size) 
-        self.low_replay_buffer = ReplayBuffer(buffer_size, batch_size)  
+        self.high_replay_buffer = ReplayBuffer(buffer_size, batch_size)
+        self.low_replay_buffer = ReplayBuffer(buffer_size, batch_size)
         self.low_buffer_freq = low_buffer_freq
         self.high_buffer_freq = high_buffer_freq
         self.low_train_freq = low_train_freq
@@ -468,10 +472,10 @@ class HiroAgent():
         if curr_step % self.low_buffer_freq == 0:
             # (state, lgoal), a, low_r, (n_s, n_lgoal), float(done)
             self.low_replay_buffer.append([
-                s, low_goal, 
-                a, 
-                low_r, 
-                n_s, n_low_goal, 
+                s, low_goal,
+                a,
+                low_r,
+                n_s, n_low_goal,
                 float(done)
                 ])
 
@@ -493,7 +497,7 @@ class HiroAgent():
         if curr_step % self.low_train_freq == 0:
             batch = self.low_replay_buffer.sample()
             self.low_con.update(batch)
-        
+
         if curr_step % self.high_train_freq == 0:
             batch = self.high_replay_buffer.sample()
             self.high_con.update(batch, self.low_con)
