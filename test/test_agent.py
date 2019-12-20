@@ -4,25 +4,26 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from hiro.models import HiroAgent
+from hiro.hiro_utils import Subgoal, spawn_dims
 
 ENV_NAME = 'AntMaze'
 
 class AgentTest(unittest.TestCase):
-    def test_(self):
-        env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        agent = HiroAgent(env)
-
-        self.assertEqual()
-
-    def test_low_goal_dim(self):
-        env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        agent = HiroAgent(env)
-
-        self.assertEqual(agent.low_goal_dim, 15)
-
     def test_low_reward(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        agent = HiroAgent(env)
+        subgoal = Subgoal()
+
+        subgoal_dim = subgoal.action_dim
+        state_dim, goal_dim, action_dim, scale_low = spawn_dims(env)
+        scale_high = subgoal.action_space.high * np.ones(subgoal_dim)
+
+        agent = HiroAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            goal_dim=goal_dim,
+            subgoal_dim=subgoal_dim,
+            scale_low=scale_low,
+            scale_high=scale_high)
 
         goal = np.array([5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 , 0])
 
@@ -42,7 +43,19 @@ class AgentTest(unittest.TestCase):
 
     def test_low_reward_negative(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        agent = HiroAgent(env)
+        subgoal = Subgoal()
+
+        subgoal_dim = subgoal.action_dim
+        state_dim, goal_dim, action_dim, scale_low = spawn_dims(env)
+        scale_high = subgoal.action_space.high * np.ones(subgoal_dim)
+
+        agent = HiroAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            goal_dim=goal_dim,
+            subgoal_dim=subgoal_dim,
+            scale_low=scale_low,
+            scale_high=scale_high)
 
         goal = np.array([5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 , 0])
 
@@ -62,7 +75,19 @@ class AgentTest(unittest.TestCase):
 
     def test_subgoal_transition(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        agent = HiroAgent(env)
+        subgoal = Subgoal()
+
+        subgoal_dim = subgoal.action_dim
+        state_dim, goal_dim, action_dim, scale_low = spawn_dims(env)
+        scale_high = subgoal.action_space.high * np.ones(subgoal_dim)
+
+        agent = HiroAgent(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            goal_dim=goal_dim,
+            subgoal_dim=subgoal_dim,
+            scale_low=scale_low,
+            scale_high=scale_high)
 
         goal = np.array([5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 , 0])
 

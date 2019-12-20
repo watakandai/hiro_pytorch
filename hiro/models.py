@@ -228,10 +228,10 @@ class TD3(object):
         return action.squeeze()
 
     def _sample_exploration_noise(self, actions):
-        scale = self.expl_noise
+        scale = self.expl_noise * self.scale
         mean = torch.zeros(actions.size()).to(device)
         var = torch.ones(actions.size()).to(device)
-        return scale*torch.normal(mean, var)
+        return torch.normal(mean, scale*var)
 
 class HigherController(TD3):
     def __init__(
@@ -370,13 +370,13 @@ class TD3Agent():
         batch_size):
 
         self.con = TD3(
-            state_dim=state_dim, 
+            state_dim=state_dim,
             goal_dim=goal_dim,
             action_dim=action_dim,
             scale=scale,
             model_path=model_path
             )
-        
+
         self.replay_buffer = ReplayBuffer(
             state_dim=state_dim,
             goal_dim=goal_dim,
@@ -441,14 +441,14 @@ class HiroAgent():
         subgoal_dim,
         scale_low,
         scale_high,
-        model_path,
-        buffer_size,
-        batch_size,
-        buffer_freq,
-        train_freq,
-        reward_scaling,
-        policy_freq_high,
-        policy_freq_low):
+        model_path='',
+        buffer_size=200000,
+        batch_size=100,
+        buffer_freq=10,
+        train_freq=10,
+        reward_scaling=1,
+        policy_freq_high=2,
+        policy_freq_low=2):
 
         self.high_con = HigherController(
             state_dim=state_dim,
@@ -541,7 +541,7 @@ class HiroAgent():
 
     def choose_action_with_noise(self, s, sg):
         return self.low_con.policy_with_noise(s, sg)
-    
+
     def choose_subgoal_with_noise(self, curr_step, s, sg, n_s):
         if curr_step % self.buffer_freq == 0:
             sg = self.high_con.policy_with_noise(s, self.fg)
@@ -565,7 +565,8 @@ class HiroAgent():
         return s[:sg.shape[0]] + sg - n_s[:sg.shape[0]]
 
     def low_reward(self, s, sg, n_s):
-        return -np.linalg.norm(s[:sg.shape[0]] + sg - n_s[:sg.shape[0]])
+        abs_s = s[:sg.shape[0]] + sg
+        return -np.sum((abs_s - n_s[:sg.shape[0]])**2)
 
     def save(self, timestep):
         self.low_con.save(timestep)

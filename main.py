@@ -2,62 +2,8 @@ import argparse
 import numpy as np
 from envs import EnvWithGoal
 from envs.create_maze_env import create_maze_env
-from hiro.models import HiroAgent, TD3Agent
-from hiro.hiro_utils import Subgoal
+from hiro.hiro_utils import Subgoal, spawn_hiro, spawn_td3
 from hiro.utils import Logger, _is_update
-
-def spawn_env(args, env):
-    goal_dim = 2
-    state_dim = env.state_dim
-    action_dim = env.action_dim
-    scale = env.action_space.high * np.ones(action_dim)
-
-    return state_dim, goal_dim, action_dim, scale
-
-def spawn_hiro(args, env, subgoal):
-    state_dim, goal_dim, action_dim, scale_low = spawn_env(args, env)
-
-    subgoal_dim = subgoal.action_dim
-    scale_high = subgoal.action_space.high * np.ones(subgoal_dim)
-
-    agent = HiroAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        goal_dim=goal_dim,
-        subgoal_dim=subgoal_dim,
-        scale_low=scale_low,
-        scale_high=scale_high,
-        model_path='_'.join([args.model_path, args.filename]),
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        buffer_freq=args.hbuffer_freq,
-        train_freq=args.train_freq,
-        reward_scaling=args.reward_scaling,
-        policy_freq_high=args.policy_freq_high,
-        policy_freq_low=args.policy_freq_low
-        )
-    return agent
-
-def spawn_td3(args, env):
-    state_dim, goal_dim, action_dim, scale = spawn_env(args, env)
-    agent = TD3Agent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        goal_dim=goal_dim,
-        scale=scale,
-        model_path='_'.join([args.model_path, args.filename]),
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        )
-    return agent
-
-def print_evaluation(rewards):
-    mean = np.mean(rewards)
-    std = np.std(rewards)
-    median = np.median(rewards)
-
-    print('mean:{mean:.2f}, std:{std:.2f}, median:{median:.2f}'.format(
-        mean=mean, std=std, median=median))
 
 def run_evaluation(args, spawn_agent):
     env = EnvWithGoal(create_maze_env(args.env), args.env)
@@ -67,7 +13,12 @@ def run_evaluation(args, spawn_agent):
     agent.load(args.timestep)
 
     rewards = agent.evaluate_policy(env, subgoal, args.eval_episodes, args.render, args.save_video, args.sleep)
-    print_evaluation(rewards)
+    mean = np.mean(rewards)
+    std = np.std(rewards)
+    median = np.median(rewards)
+
+    print('mean:{mean:.2f}, std:{std:.2f}, median:{median:.2f}'.format(
+        mean=mean, std=std, median=median))
 
 def run_hiro_training(args):
     env = EnvWithGoal(create_maze_env(args.env), args.env)
@@ -109,7 +60,7 @@ def run_hiro_training(args):
                 n_sg = subgoal.action_space.sample()
             else:
                 n_sg = agent.choose_subgoal_with_noise(steps, s, sg, n_s)
-            
+
             sr = agent.low_reward(s, sg, n_s)
             agent.append(steps, s, a, sg, n_s, n_sg, r, sr, d)
 
@@ -119,7 +70,7 @@ def run_hiro_training(args):
                 if args.save and _is_update(steps, args.writer_freq):
                     for k, v in losses.items():
                         logger.write('loss/%s'%(k), v, accum_steps)
-                    
+
                     for k, v in td_errors.items():
                         logger.write('td_error/%s'%(k), v, accum_steps)
 
@@ -184,7 +135,7 @@ def run_td3_training(args):
                 if args.save and _is_update(steps, args.writer_freq):
                     for k, v in losses.items():
                         logger.write('loss/%s'%(k), v, accum_steps)
-                    
+
                     for k, v in td_errors.items():
                         logger.write('td_error/%s'%(k), v, accum_steps)
 

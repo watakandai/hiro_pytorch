@@ -3,33 +3,51 @@ import numpy as np
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from envs.create_maze_env import create_maze_env
+from hiro.models import HiroAgent
+from hiro.hiro_utils import Subgoal, spawn_dims
 
 ENV_NAME = 'AntMaze'
 
 class EnvTest(unittest.TestCase):
-    def test_dimension(self):
+    def test_dimensions(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-
-        state_dim = env.state_space.shape[0]
-        action_dim = env.action_space.shape[0]
-
-        obs = env.reset()
-        pos = obs['achieved_goal']
-        position_dim = pos.shape[0]
+        subgoal = Subgoal()
+        subgoal_dim = subgoal.action_dim
+        state_dim, goal_dim, action_dim, _ = spawn_dims(env)
 
         # {xyz=3, orientation (quaternion)=4, limb angles=8} * {pos, vel}
         # = (3+4+8)*2 = 15*2 = 30
-        self.assertEqual(state_dim, 30)
+        # states + time (1)
+        self.assertEqual(state_dim, 31)
         # num of limbs
         self.assertEqual(action_dim, 8)
-        # Evaluate error with just xy coordinates
-        self.assertEqual(position_dim, 2)
+        # {xyz=3, orientation (quaternion)=4, limb angles=8}
+        # = 3+4+8 = 15
+        self.assertEqual(subgoal_dim, 15)
+        # x, y
+        self.assertEqual(goal_dim, 2)
 
-    def test_max_action(self):
+    def test_low_action_limit(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
-        max_action = env.action_space.high
-        self.assertEquals(max_action, 30)
+        subgoal = Subgoal()
+
+        subgoal_dim = subgoal.action_dim
+        _, _, _, action_lim = spawn_dims(env)
+        action_lim_given = np.array([30]*15)
+
+        self.assertTrue((action_lim == action_lim_given).all())
+
+    def test_high_action_limit(self):
+        subgoal = Subgoal()
+        subgoal_dim = subgoal.action_dim
+        action_lim = subgoal.action_space.high * np.ones(subgoal_dim)
+
+        action_lim_given = np.array([
+            10, 10, 0.5, 0.5, 1, 1, 1, 1,
+            0.5, 0.3, 0.5, 0.3, 0.5, 0.3, 0.5, 0.3
+        ])
+
+        self.assertTrue((action_lim == action_lim_given).all())
 
     def test_goal_does_not_change(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
@@ -79,7 +97,6 @@ class EnvTest(unittest.TestCase):
         hand_computed_reward = -mse
 
         self.assertEqual(reward, hand_computed_reward)
-
 
     def test_goal_range(self):
         env = EnvWithGoal(create_maze_env(ENV_NAME), ENV_NAME)
