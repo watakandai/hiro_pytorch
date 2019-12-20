@@ -13,8 +13,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .nn_rl import Agent, ReplayBuffer
 from .utils import get_tensor
+from hiro.hiro_utils import LowReplayBuffer, HighReplayBuffer, ReplayBuffer
+from hiro.utils import _is_update
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -161,6 +162,7 @@ class TD3(object):
             target_Q2 = self.critic2_target(n_states, n_goals, n_actions)
             target_Q = torch.min(target_Q1, target_Q2)
             target_Q = rewards + not_done * self.gamma * target_Q
+            #target_Q = self.reward_scale*(target_Q - target_Q.mean())/(target_Q.std() + self.eps*torch.ones(target_Q.shape))
             target_Q_detached = target_Q.detach()
 
         current_Q1 = self.critic1(states, goals, actions)
@@ -169,6 +171,8 @@ class TD3(object):
         critic1_loss = F.mse_loss(current_Q1, target_Q_detached)
         critic2_loss = F.mse_loss(current_Q2, target_Q_detached)
         critic_loss = critic1_loss + critic2_loss
+
+        td_error = (target_Q_detached - current_Q1).mean().cpu().data.numpy()
 
         self.critic1_optimizer.zero_grad()
         self.critic2_optimizer.zero_grad()
@@ -189,12 +193,15 @@ class TD3(object):
             self._update_target_network(self.critic2_target, self.critic2, self.tau)
             self._update_target_network(self.actor_target, self.actor, self.tau)
 
-            return {'actor_loss': actor_loss, 'critic_loss': critic_loss}
+            return {'actor_loss'+self.name: actor_loss, 'critic_loss'+self.name: critic_loss}, \
+                   {'td_error'+self.name: td_error}
 
-        return {'critic_loss': critic_loss}
+        return {'critic_loss'+self.name: critic_loss}, \
+               {'td_error'+self.name: td_error}
 
     def train(self, replay_buffer, iterations=1):
-        raise NotImplementedError('Need to implement train function for each controller')
+        states, goals, actions, n_states, rewards, not_done = replay_buffer.sample()
+        return self._train(states, goals, actions, rewards, n_states, goals, not_done)
 
     def policy(self, state, goal, to_numpy=True):
         state = get_tensor(state)
@@ -221,10 +228,10 @@ class TD3(object):
         return action.squeeze()
 
     def _sample_exploration_noise(self, actions):
-        scale = self.expl_noise * self.actor.scale
+        scale = self.expl_noise
         mean = torch.zeros(actions.size()).to(device)
         var = torch.ones(actions.size()).to(device)
-        return torch.normal(mean, scale*var)
+        return scale*torch.normal(mean, var)
 
 class HigherController(TD3):
     def __init__(
@@ -248,6 +255,7 @@ class HigherController(TD3):
             noise_clip, gamma, policy_freq, tau
         )
         self.name = '_high'
+        self.action_dim = action_dim
 
     def off_policy_corrections(self, low_con, batch_size, sgoals, states, actions, candidate_goals=8):
         first_s = [s[0] for s in states] # First x
@@ -268,7 +276,7 @@ class HigherController(TD3):
 
         # Shape: (batch_size, 10, subgoal_dim)
         candidates = np.concatenate([original_goal, diff_goal, random_goals], axis=1)
-        states = np.array(states)[:, :-1, :]
+        #states = np.array(states)[:, :-1, :]
         actions = np.array(actions)
         seq_len = len(states[0])
 
@@ -312,10 +320,11 @@ class HigherController(TD3):
         actions = self.off_policy_corrections(
             low_con,
             replay_buffer.batch_size,
-            actions,
-            states_arr,
-            actions_arr)
+            actions.cpu().data.numpy(),
+            states_arr.cpu().data.numpy(),
+            actions_arr.cpu().data.numpy())
 
+        actions = get_tensor(actions)
         return self._train(states, goals, actions, rewards, n_states, goals, not_done)
 
 class LowerController(TD3):
@@ -345,9 +354,83 @@ class LowerController(TD3):
         if not self._initialized:
             self._initialize_target_networks()
 
-        states, sgoals, actions, rewards, n_states, n_sgoals, not_done = replay_buffer.sample()
+        states, sgoals, actions, n_states, n_sgoals, rewards, not_done = replay_buffer.sample()
 
         return self._train(states, sgoals, actions, rewards, n_states, n_sgoals, not_done)
+
+class TD3Agent():
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        goal_dim,
+        scale,
+        model_path,
+        buffer_size,
+        batch_size):
+
+        self.con = TD3(
+            state_dim=state_dim, 
+            goal_dim=goal_dim,
+            action_dim=action_dim,
+            scale=scale,
+            model_path=model_path
+            )
+        
+        self.replay_buffer = ReplayBuffer(
+            state_dim=state_dim,
+            goal_dim=goal_dim,
+            action_dim=action_dim,
+            buffer_size=buffer_size,
+            batch_size=batch_size
+            )
+
+    def append(self, curr_step, s, g, a, n_s, r, d):
+        self.replay_buffer.append(s, g, a, n_s, r, d)
+
+    def train(self, curr_step):
+        return self.con.train(self.replay_buffer)
+
+    def choose_action(self, s, g):
+        return self.con.policy(s, g)
+
+    def choose_action_with_noise(self, s, g):
+        return self.con.policy_with_noise(s, g)
+
+    def save(self, timestep):
+        pass
+
+    def load(self, timestep):
+        self.con.save(timestep)
+
+    def evaluate_policy(self, env, subgoal, eval_episodes=10, render=False, save_video=False, sleep=-1):
+        if save_video:
+            from OpenGL import GL
+            env = gym.wrappers.Monitor(env, directory='video',
+                                    write_upon_reset=True, force=True, resume=True, mode='evaluation')
+            render = False
+
+        rewards = []
+        for e in range(eval_episodes):
+            obs = env.reset()
+            fg = obs['desired_goal']
+            s = obs['observation']
+            done = False
+            reward_episode_sum = 0
+
+            while not done:
+                if render:
+                    env.render()
+                if sleep>0:
+                    time.sleep(sleep)
+                a = self.choose_action(s, fg)
+                obs, r, done, _ = env.step(a)
+                s = obs['observation']
+                reward_episode_sum += r
+            else:
+                rewards.append(reward_episode_sum)
+
+        return np.array(rewards)
 
 class HiroAgent():
     def __init__(
@@ -361,19 +444,19 @@ class HiroAgent():
         model_path,
         buffer_size,
         batch_size,
-        low_buffer_freq,
-        high_buffer_freq, # c steps, not specified in the paper
-        low_train_freq,
-        high_train_freq,
-        c=10,
-        manager_reward_scale=0.1):
+        buffer_freq,
+        train_freq,
+        reward_scaling,
+        policy_freq_high,
+        policy_freq_low):
 
         self.high_con = HigherController(
             state_dim=state_dim,
             goal_dim=goal_dim,
             action_dim=subgoal_dim,
             scale=scale_high,
-            model_path=model_path
+            model_path=model_path,
+            policy_freq=policy_freq_high
             )
 
         self.low_con = LowerController(
@@ -381,7 +464,8 @@ class HiroAgent():
             goal_dim=subgoal_dim,
             action_dim=action_dim,
             scale=scale_low,
-            model_path=model_path
+            model_path=model_path,
+            policy_freq=policy_freq_low
             )
 
         self.replay_buffer_low = LowReplayBuffer(
@@ -395,32 +479,29 @@ class HiroAgent():
         self.replay_buffer_high = HighReplayBuffer(
             state_dim=state_dim,
             goal_dim=goal_dim,
-            action_dim=subgoal_dim,
+            subgoal_dim=subgoal_dim,
+            action_dim=action_dim,
             buffer_size=buffer_size,
             batch_size=batch_size,
-            freq=high_buffer_freq
+            freq=buffer_freq
             )
 
-        self.low_buffer_freq = low_buffer_freq
-        self.high_buffer_freq = high_buffer_freq
-        self.low_train_freq = low_train_freq
-        self.high_train_freq = high_train_freq
-        # TODO: Implement reward scaling
-        self.low_reward_scale = low_reward_scale
-        self.high_reward_scale = high_reward_scale
+        self.buffer_freq = buffer_freq
+        self.train_freq = train_freq
+        self.reward_scaling = reward_scaling
 
         self.buf = None
-        self.used_high_policy = False
 
-    def append(self, curr_step, s, fg, a, sg, n_s, n_sg, r, d):
+    def append(self, curr_step, s, a, sg, n_s, n_sg, r, sr, d):
         # Low Replay Buffer
-        if curr_step % self.low_buffer_freq == 1:
-            sr = self.low_reward(s, sg, n_s)
-            self.replay_buffer_low.append(
-                s, sg, a, sr, n_s, n_sg, d)
+        self.replay_buffer_low.append(
+            s, sg, a, n_s, n_sg, sr, d)
 
         # High Replay Buffer
-        if curr_step % self.high_buffer_freq == 1:
+        if curr_step == 0:
+            self.buf = [s, self.fg, sg, 0, None, None, [], []]
+
+        if _is_update(curr_step, self.buffer_freq):
             if self.buf:
                 self.buf[4] = s
                 self.buf[5] = d
@@ -432,33 +513,38 @@ class HiroAgent():
                     reward=self.buf[3],
                     done=self.buf[5],
                     state_arr=np.array(self.buf[6]),
-                    action_arr=p.array(self.buf[7])
+                    action_arr=np.array(self.buf[7])
                 )
-            self.buf = [s, fg, sg, 0, None, None, [], []]
+            self.buf = [s, self.fg, sg, 0, None, None, [], []]
 
-        self.buf[3] += r
+        self.buf[3] += self.reward_scaling * r
         self.buf[6].append(s)
         self.buf[7].append(a)
 
     def train(self, curr_step):
         losses = {}
+        td_errors = {}
 
-        if curr_step % self.low_train_freq == 0:
-            loss = self.low_con.train(self.low_replay_buffer)
+        loss, td_error = self.low_con.train(self.replay_buffer_low)
+        losses.update(loss)
+        td_errors.update(td_error)
+
+        if curr_step % self.train_freq == 0:
+            loss, td_error = self.high_con.train(self.replay_buffer_high, self.low_con)
             losses.update(loss)
+            td_errors.update(td_error)
 
-        if curr_step % self.high_train_freq == 0:
-            loss = self.high_con.train(self.high_replay_buffer, self.low_con)
-            losses.update(loss)
+        return losses, td_errors
 
-        return losses
+    def set_final_goal(self, g):
+        self.fg = g
 
     def choose_action_with_noise(self, s, sg):
         return self.low_con.policy_with_noise(s, sg)
-
-    def choose_subgoal_with_noise(self, curr_step, s, fg, sg):
-        if curr_step % self.high_buffer_freq == 1:
-            sg = self.high_con.policy_with_noise(s, fg)
+    
+    def choose_subgoal_with_noise(self, curr_step, s, sg, n_s):
+        if curr_step % self.buffer_freq == 0:
+            sg = self.high_con.policy_with_noise(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
 
@@ -467,9 +553,9 @@ class HiroAgent():
     def choose_action(self, s, sg):
         return self.low_con.policy(s, sg)
 
-    def choose_subgoal(self, curr_step, s, fg, sg):
-        if curr_step % self.high_buffer_freq == 1:
-            sg = self.high_con.policy(s, fg)
+    def choose_subgoal(self, curr_step, s, sg, n_s):
+        if curr_step % self.buffer_freq == 0:
+            sg = self.high_con.policy(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
 
@@ -489,7 +575,7 @@ class HiroAgent():
         self.low_con.load(timestep)
         self.high_con.load(timestep)
 
-    def evaluate_policy(self, env, eval_episodes=10, render=False, save_video=False, sleep=-1):
+    def evaluate_policy(self, env, subgoal, eval_episodes=5, render=False, save_video=False, sleep=-1):
         if save_video:
             from OpenGL import GL
             env = gym.wrappers.Monitor(env, directory='video',
@@ -502,8 +588,9 @@ class HiroAgent():
             fg = obs['desired_goal']
             s = obs['observation']
             sg = subgoal.action_space.sample()
+            n_s = s
             done = False
-            steps = 1
+            steps = 0
             reward_episode_sum = 0
 
             while not done:
@@ -511,15 +598,16 @@ class HiroAgent():
                     env.render()
                 if sleep>0:
                     time.sleep(sleep)
-                sg = self.choose_subgoal(steps, s, fg, sg)
                 a = self.choose_action(s, sg)
-                n_s, r, done, _ = env.step(a)
+                obs, r, done, _ = env.step(a)
+                n_s = obs['observation']
+                sg = self.choose_subgoal(steps, s, sg, n_s)
 
                 s = n_s
                 reward_episode_sum += r
                 steps += 1
             else:
-                print("Rewards in Episode %i: %.2f"%(e, reward_episode_sum/steps))
+                #print("Rewards in Episode %i: %.2f"%(e, reward_episode_sum))
                 rewards.append(reward_episode_sum)
 
         return np.array(rewards)

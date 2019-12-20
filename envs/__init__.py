@@ -47,6 +47,8 @@ class EnvWithGoal(object):
         self.goal = None
         self.distance_threshold = 5
         self.count = 0
+        self.state_dim = self.base_env.observation_space.shape[0] + 1
+        self.action_dim = self.base_env.action_space.shape[0]
 
     def seed(self, seed):
         self.base_env.seed(seed)
@@ -58,7 +60,8 @@ class EnvWithGoal(object):
         self.count = 0
         self.goal = self.goal_sample_fn()
         return {
-            'observation': obs.copy(),
+            # add timestep
+            'observation': np.r_[obs.copy(), self.count], 
             'achieved_goal': obs[:2],
             'desired_goal': self.goal,
         }
@@ -68,7 +71,8 @@ class EnvWithGoal(object):
         reward = self.reward_fn(obs, self.goal)
         self.count += 1
         next_obs = {
-            'observation': obs.copy(),
+            # add timestep
+            'observation': np.r_[obs.copy(), self.count],
             'achieved_goal': obs[:2],
             'desired_goal': self.goal,
         }
@@ -95,6 +99,9 @@ class EnvWithGoal(object):
     def action_space(self):
         return self.base_env.action_space
 
+    @property
+    def observation_space(self):
+        return self.base_env.observation_space
 
 def run_environment(env_name, episode_length, num_episodes):
     env = EnvWithGoal(

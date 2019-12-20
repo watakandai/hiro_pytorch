@@ -42,6 +42,7 @@ class MazeEnv(gym.Env):
       *args,
       **kwargs):
     self._maze_id = maze_id
+    self.t = 0
 
     model_cls = self.__class__.MODEL_CLASS
     if model_cls is None:
