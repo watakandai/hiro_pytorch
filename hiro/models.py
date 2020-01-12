@@ -9,12 +9,13 @@
 import os
 import copy
 import time
+import glob
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .utils import get_tensor
-from hiro.hiro_utils import LowReplayBuffer, HighReplayBuffer, ReplayBuffer
+from hiro.hiro_utils import LowReplayBuffer, HighReplayBuffer, ReplayBuffer, Subgoal
 from hiro.utils import _is_update
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -95,14 +96,8 @@ class TD3(object):
         self.critic1_target = TD3Critic(state_dim, goal_dim, action_dim).to(device)
         self.critic2_target = TD3Critic(state_dim, goal_dim, action_dim).to(device)
 
-        self.critic1_optimizer = torch.optim.Adam(
-                self.critic1.parameters(),
-                lr=critic_lr, weight_decay=0.0001
-        )
-        self.critic2_optimizer = torch.optim.Adam(
-                self.critic2.parameters(),
-                lr=critic_lr, weight_decay=0.0001
-        )
+        self.critic1_optimizer = torch.optim.Adam(self.critic1.parameters(), lr=critic_lr)
+        self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=critic_lr)
         self._initialize_target_networks()
 
         self._initialized = False
@@ -118,34 +113,42 @@ class TD3(object):
         for target_param, origin_param in zip(target.parameters(), origin.parameters()):
             target_param.data.copy_(tau * origin_param.data + (1.0 - tau) * target_param.data)
 
-    def save(self, timestep=-1):
-        if not os.path.exists(os.path.dirname(self.model_path)):
-            os.mkdir(os.path.dirname(self.model_path))
+    def save(self, episode):
+        model_path = os.path.join(self.model_path, str(episode))
 
-        if timestep>0:
-            model_path = self.model_path + self.name + '_%i'%(timestep)
-        else:
-            model_path = self.model_path + self.name
+        if not os.path.exists(os.path.dirname(model_path)):
+            os.mkdir(os.path.dirname(model_path))
 
-        torch.save(self.actor.state_dict(), model_path+"_actor.h5")
-        torch.save(self.actor_optimizer.state_dict(), model_path+"_actor_optimizer.h5")
-        torch.save(self.critic1.state_dict(), model_path+"_critic1.h5")
-        torch.save(self.critic2.state_dict(), model_path+"_critic2.h5")
-        torch.save(self.critic1_optimizer.state_dict(), model_path+"_critic1_optimizer.h5")
-        torch.save(self.critic2_optimizer.state_dict(), model_path+"_critic2_optimizer.h5")
+        torch.save(
+            self.actor.state_dict(), 
+            os.path.join(model_path, self.name+"_actor.h5")
+        )
+        torch.save(
+            self.critic1.state_dict(), 
+            os.path.join(model_path, self.name+"_critic1.h5")
+        )
+        torch.save(
+            self.critic2.state_dict(), 
+            os.path.join(model_path, self.name+"_critic2.h5")
+        )
 
-    def load(self, timestep=-1):
-        if timestep>0:
-            model_path = self.model_path + self.name + '_%i'%(timestep)
-        else:
-            model_path = self.model_path + self.name
+    def load(self, episode):
+        # episode is -1, then read most updated
+        if episode<0:
+            episode_list = map(int, glob.glob(self.model_path))
+            episode = max(episode_list)
 
-        self.actor.load_state_dict(torch.load(model_path+"_actor.h5"))
-        self.actor_optimizer.load_state_dict(torch.load(model_path+"_actor_optimizer.h5"))
-        self.critic1.load_state_dict(torch.load(model_path+"_critic1.h5"))
-        self.critic2.load_state_dict(torch.load(model_path+"_critic2.h5"))
-        self.critic1_optimizer.load_state_dict(torch.load(model_path+"_critic1_optimizer.h5"))
-        self.critic2_optimizer.load_state_dict(torch.load(model_path+"_critic2_optimizer.h5"))
+        model_path = os.path.join(self.model_path, str(episode)) 
+
+        self.actor.load_state_dict(torch.load(
+            os.path.join(model_path, self.name+"_actor.h5"))
+        )
+        self.critic1.load_state_dict(torch.load(
+            os.path.join(model_path, self.name+"_critic1.h5"))
+        )
+        self.critic2.load_state_dict(torch.load(
+            os.path.join(model_path, self.name+"_critic2.h5"))
+        )
 
     def _train(self, states, goals, actions, rewards, n_states, n_goals, not_done):
         self.total_it += 1
@@ -161,15 +164,13 @@ class TD3(object):
             target_Q1 = self.critic1_target(n_states, n_goals, n_actions)
             target_Q2 = self.critic2_target(n_states, n_goals, n_actions)
             target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = rewards + not_done * self.gamma * target_Q
-            #target_Q = self.reward_scale*(target_Q - target_Q.mean())/(target_Q.std() + self.eps*torch.ones(target_Q.shape))
-            target_Q_detached = target_Q.detach()
+            target_Q_detached = (rewards + not_done * self.gamma * target_Q).detach()
 
         current_Q1 = self.critic1(states, goals, actions)
         current_Q2 = self.critic2(states, goals, actions)
 
-        critic1_loss = F.mse_loss(current_Q1, target_Q_detached)
-        critic2_loss = F.mse_loss(current_Q2, target_Q_detached)
+        critic1_loss = F.smooth_l1_loss(current_Q1, target_Q_detached)
+        critic2_loss = F.smooth_l1_loss(current_Q2, target_Q_detached)
         critic_loss = critic1_loss + critic2_loss
 
         td_error = (target_Q_detached - current_Q1).mean().cpu().data.numpy()
@@ -183,7 +184,7 @@ class TD3(object):
         if self.total_it % self.policy_freq == 0:
             a = self.actor(states, goals)
             Q1 = self.critic1(states, goals, a)
-            actor_loss = -Q1.mean()
+            actor_loss = -Q1.mean() # multiply by neg becuz gradient ascent
 
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
@@ -193,11 +194,9 @@ class TD3(object):
             self._update_target_network(self.critic2_target, self.critic2, self.tau)
             self._update_target_network(self.actor_target, self.actor, self.tau)
 
-            return {'actor_loss'+self.name: actor_loss, 'critic_loss'+self.name: critic_loss}, \
-                   {'td_error'+self.name: td_error}
+            return {'actor_loss'+self.name: actor_loss, 'critic_loss'+self.name: critic_loss}
 
-        return {'critic_loss'+self.name: critic_loss}, \
-               {'td_error'+self.name: td_error}
+        return {'critic_loss'+self.name: critic_loss}
 
     def train(self, replay_buffer, iterations=1):
         states, goals, actions, n_states, rewards, not_done = replay_buffer.sample()
@@ -228,10 +227,9 @@ class TD3(object):
         return action.squeeze()
 
     def _sample_exploration_noise(self, actions):
-        scale = self.expl_noise * self.scale
         mean = torch.zeros(actions.size()).to(device)
         var = torch.ones(actions.size()).to(device)
-        return torch.normal(mean, scale*var)
+        return torch.normal(mean, self.expl_noise*var)
 
 class HigherController(TD3):
     def __init__(
@@ -358,16 +356,43 @@ class LowerController(TD3):
 
         return self._train(states, sgoals, actions, rewards, n_states, n_sgoals, not_done)
 
-class TD3Agent():
+class Agent():
+    def __init__(self):
+        pass
+
+    def set_final_goal(self, fg):
+        self.fg = fg
+
+    def step(self, s, env, step, global_step=0, explore=False):
+        raise NotImplementedError
+
+    def append(self, step, s, a, n_s, r, d):
+        raise NotImplementedError
+
+    def train(self, global_step):
+        raise NotImplementedError
+
+    def end_step(self):
+        raise NotImplementedError
+
+    def end_episode(self, episode, logger):
+        raise NotImplementedError
+    
+    def evaluate_policy(self, env, eval_episodes, render, save_video, sleep):
+        raise NotImplementedError
+
+class TD3Agent(Agent):
     def __init__(
         self,
         state_dim,
         action_dim,
         goal_dim,
         scale,
+        model_save_freq,
         model_path,
         buffer_size,
-        batch_size):
+        batch_size,
+        start_training_steps):
 
         self.con = TD3(
             state_dim=state_dim,
@@ -384,24 +409,50 @@ class TD3Agent():
             buffer_size=buffer_size,
             batch_size=batch_size
             )
+        self.model_save_freq = model_save_freq
+        self.start_training_steps = start_training_steps
 
-    def append(self, curr_step, s, g, a, n_s, r, d):
-        self.replay_buffer.append(s, g, a, n_s, r, d)
+    def set_final_goal(self, fg):
+        self.fg = fg
 
-    def train(self, curr_step):
+    def step(self, s, env, step, global_step=0, explore=False):
+        if explore:
+            if global_step <= self.start_training_steps:
+                a = env.action_space.sample()
+            else:
+                a = self._choose_action_with_noise(s)
+        else:
+            a = self._choose_action(s)
+        
+        obs, r, done, _ = env.step(a)
+        n_s = obs['observation']
+
+        return a, r, n_s, done
+
+    def append(self, step, s, a, n_s, r, d):
+        self.replay_buffer.append(s, self.fg, a, n_s, r, d)
+
+    def train(self, global_step):
         return self.con.train(self.replay_buffer)
 
-    def choose_action(self, s, g):
-        return self.con.policy(s, g)
+    def _choose_action(self, s):
+        return self.con.policy(s, self.fg)
 
-    def choose_action_with_noise(self, s, g):
-        return self.con.policy_with_noise(s, g)
+    def _choose_action_with_noise(self, s):
+        return self.con.policy_with_noise(s, self.fg)
 
-    def save(self, timestep):
+    def end_step(self):
         pass
 
-    def load(self, timestep):
-        self.con.save(timestep)
+    def end_episode(self, episode, logger):
+        if _is_update(episode, self.model_save_freq):
+            self.save(episode=episode)
+
+    def save(self, episode):
+        self.con.save(episode)
+
+    def load(self, episode):
+        self.con.load(episode)
 
     def evaluate_policy(self, env, subgoal, eval_episodes=10, render=False, save_video=False, sleep=-1):
         if save_video:
@@ -410,6 +461,7 @@ class TD3Agent():
                                     write_upon_reset=True, force=True, resume=True, mode='evaluation')
             render = False
 
+        success = 0
         rewards = []
         for e in range(eval_episodes):
             obs = env.reset()
@@ -428,27 +480,35 @@ class TD3Agent():
                 s = obs['observation']
                 reward_episode_sum += r
             else:
+                error = np.sqrt(np.sum(np.square(fg-s[:2])))
                 rewards.append(reward_episode_sum)
+                success += 1 if error <=5 else 0
 
-        return np.array(rewards)
+        return np.array(rewards), success/eval_episodes
 
-class HiroAgent():
+class HiroAgent(Agent):
     def __init__(
         self,
         state_dim,
         action_dim,
         goal_dim,
-        subgoal_dim,
         scale_low,
-        scale_high,
-        model_path='',
+        start_training_steps,
+        model_save_freq,
+        model_path,
         buffer_size=200000,
         batch_size=100,
         buffer_freq=10,
         train_freq=10,
-        reward_scaling=1,
+        reward_scaling=0.1,
         policy_freq_high=2,
         policy_freq_low=2):
+
+        self.subgoal = Subgoal()
+        subgoal_dim = self.subgoal.action_dim
+        scale_high = self.subgoal.action_space.high * np.ones(subgoal_dim)
+
+        self.model_save_freq = model_save_freq
 
         self.high_con = HigherController(
             state_dim=state_dim,
@@ -489,22 +549,58 @@ class HiroAgent():
         self.buffer_freq = buffer_freq
         self.train_freq = train_freq
         self.reward_scaling = reward_scaling
+        self.episode_subreward = 0
 
         self.buf = None
+        self.fg = np.array([0,0])
+        self.sg = self.subgoal.action_space.sample()
 
-    def append(self, curr_step, s, a, sg, n_s, n_sg, r, sr, d):
+        self.start_training_steps = start_training_steps
+
+    def set_final_goal(self, fg):
+        self.fg = fg
+
+    def step(self, s, env, step, global_step=0, explore=False):
+        ## Lower Level Controller
+        if explore:
+            # Take random action for start_training_steps
+            if global_step <= self.start_training_steps:
+                a = env.action_space.sample()
+            else:
+                a = self._choose_action_with_noise(s, self.sg)
+        else:
+            a = self._choose_action(s, self.sg)
+
+        # Take action
+        obs, r, done, _ = env.step(a)
+        n_s = obs['observation']
+
+        ## Higher Level Controller
+        # Take random action for start_training steps
+        if explore:
+            if global_step <= self.start_training_steps:
+                n_sg = self.subgoal.action_space.sample()
+            else:
+                n_sg = self._choose_subgoal_with_noise(step, s, self.sg, n_s)
+        else:
+            n_sg = self._choose_subgoal(step, s, self.sg, n_s)
+        
+        self.n_sg = n_sg
+
+        return a, r, n_s, done
+
+    def append(self, step, s, a, n_s, r, d):
+        self.sr = self.low_reward(s, self.sg, n_s)
+
         # Low Replay Buffer
         self.replay_buffer_low.append(
-            s, sg, a, n_s, n_sg, sr, d)
+            s, self.sg, a, n_s, self.n_sg, self.sr, float(d))
 
         # High Replay Buffer
-        if curr_step == 0:
-            self.buf = [s, self.fg, sg, 0, None, None, [], []]
-
-        if _is_update(curr_step, self.buffer_freq):
+        if _is_update(step, self.buffer_freq, rem=1):
             if self.buf:
                 self.buf[4] = s
-                self.buf[5] = d
+                self.buf[5] = float(d)
                 self.replay_buffer_high.append(
                     state=self.buf[0],
                     goal=self.buf[1],
@@ -515,46 +611,41 @@ class HiroAgent():
                     state_arr=np.array(self.buf[6]),
                     action_arr=np.array(self.buf[7])
                 )
-            self.buf = [s, self.fg, sg, 0, None, None, [], []]
+            self.buf = [s, self.fg, self.sg, 0, None, None, [], []]
 
         self.buf[3] += self.reward_scaling * r
         self.buf[6].append(s)
         self.buf[7].append(a)
 
-    def train(self, curr_step):
+    def train(self, global_step):
         losses = {}
-        td_errors = {}
 
-        loss, td_error = self.low_con.train(self.replay_buffer_low)
-        losses.update(loss)
-        td_errors.update(td_error)
-
-        if curr_step % self.train_freq == 0:
-            loss, td_error = self.high_con.train(self.replay_buffer_high, self.low_con)
+        if global_step > self.start_training_steps:
+            loss = self.low_con.train(self.replay_buffer_low)
             losses.update(loss)
-            td_errors.update(td_error)
 
-        return losses, td_errors
+            if global_step % self.train_freq == 0:
+                loss = self.high_con.train(self.replay_buffer_high, self.low_con)
+                losses.update(loss)
 
-    def set_final_goal(self, g):
-        self.fg = g
+        return losses
 
-    def choose_action_with_noise(self, s, sg):
+    def _choose_action_with_noise(self, s, sg):
         return self.low_con.policy_with_noise(s, sg)
 
-    def choose_subgoal_with_noise(self, curr_step, s, sg, n_s):
-        if curr_step % self.buffer_freq == 0:
+    def _choose_subgoal_with_noise(self, step, s, sg, n_s):
+        if step % self.buffer_freq == 1:
             sg = self.high_con.policy_with_noise(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
 
         return sg
 
-    def choose_action(self, s, sg):
+    def _choose_action(self, s, sg):
         return self.low_con.policy(s, sg)
 
-    def choose_subgoal(self, curr_step, s, sg, n_s):
-        if curr_step % self.buffer_freq == 0:
+    def _choose_subgoal(self, step, s, sg, n_s):
+        if step % self.buffer_freq == 1:
             sg = self.high_con.policy(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
@@ -566,49 +657,68 @@ class HiroAgent():
 
     def low_reward(self, s, sg, n_s):
         abs_s = s[:sg.shape[0]] + sg
-        return -np.sum((abs_s - n_s[:sg.shape[0]])**2)
+        return -np.sqrt(np.sum((abs_s - n_s[:sg.shape[0]])**2))
 
-    def save(self, timestep):
-        self.low_con.save(timestep)
-        self.high_con.save(timestep)
+    def end_step(self):
+        self.episode_subreward += self.sr
+        self.sg = self.n_sg
 
-    def load(self, timestep):
-        self.low_con.load(timestep)
-        self.high_con.load(timestep)
+    def end_episode(self, episode, logger):
+        # Save Model
+        if _is_update(episode, self.model_save_freq):
+            self.save(episode=episode)
 
-    def evaluate_policy(self, env, subgoal, eval_episodes=5, render=False, save_video=False, sleep=-1):
+        logger.write('reward/Intrinsic Reward', self.episode_subreward, episode)
+        self.episode_subreward = 0
+        self.buf = None
+
+    def save(self, episode):
+        self.low_con.save(episode)
+        self.high_con.save(episode)
+
+    def load(self, episode):
+        self.low_con.load(episode)
+        self.high_con.load(episode)
+
+    def evaluate_policy(self, env, eval_episodes=10, render=False, save_video=False, sleep=-1):
         if save_video:
             from OpenGL import GL
             env = gym.wrappers.Monitor(env, directory='video',
                                     write_upon_reset=True, force=True, resume=True, mode='evaluation')
             render = False
 
+        env.evaluate = True
         rewards = []
+        success = 0
         for e in range(eval_episodes):
             obs = env.reset()
             fg = obs['desired_goal']
             s = obs['observation']
-            sg = subgoal.action_space.sample()
-            n_s = s
             done = False
-            steps = 0
+            
+            step = 1
             reward_episode_sum = 0
+
+            self.set_final_goal(fg)
 
             while not done:
                 if render:
                     env.render()
                 if sleep>0:
                     time.sleep(sleep)
-                a = self.choose_action(s, sg)
-                obs, r, done, _ = env.step(a)
-                n_s = obs['observation']
-                sg = self.choose_subgoal(steps, s, sg, n_s)
 
+                a, r, n_s, done = self.step(s, env, step)
+                
                 s = n_s
                 reward_episode_sum += r
-                steps += 1
+                step += 1
             else:
-                #print("Rewards in Episode %i: %.2f"%(e, reward_episode_sum))
+                error = np.sqrt(np.sum(np.square(fg-s[:2])))
+                print('L2 Norm: %.2f'%(error))
+                print('Final Goal: (%02.2f, %02.2f)'%(fg[0], fg[1]))
+                print('Curr  Goal: (%02.2f, %02.2f)'%(s[0], s[1]))
                 rewards.append(reward_episode_sum)
+                success += 1 if error <=5 else 0
 
-        return np.array(rewards)
+        env.evaluate = False
+        return np.array(rewards), success/eval_episodes

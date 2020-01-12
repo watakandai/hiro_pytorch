@@ -6,6 +6,9 @@ import torch
 from hiro.models import HiroAgent
 from hiro.hiro_utils import Subgoal, spawn_dims
 
+from envs import EnvWithGoal
+from envs.create_maze_env import create_maze_env
+
 ENV_NAME = 'AntMaze'
 
 class AgentTest(unittest.TestCase):

@@ -1,2 +1,3 @@
 rm -rf log/*
-rm model/*
+rm -rf model
+mkdir model

@@ -1,53 +1,8 @@
 import torch
 import numpy as np
-from hiro.models import HiroAgent, TD3Agent
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def spawn_dims( env):
-    goal_dim = 2
-    state_dim = env.state_dim
-    action_dim = env.action_dim
-    scale = env.action_space.high * np.ones(action_dim)
-
-    return state_dim, goal_dim, action_dim, scale
-
-def spawn_hiro(args, env, subgoal):
-    state_dim, goal_dim, action_dim, scale_low = spawn_dims(env)
-
-    subgoal_dim = subgoal.action_dim
-    scale_high = subgoal.action_space.high * np.ones(subgoal_dim)
-
-    agent = HiroAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        goal_dim=goal_dim,
-        subgoal_dim=subgoal_dim,
-        scale_low=scale_low,
-        scale_high=scale_high,
-        model_path='_'.join([args.model_path, args.filename]),
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        buffer_freq=args.hbuffer_freq,
-        train_freq=args.train_freq,
-        reward_scaling=args.reward_scaling,
-        policy_freq_high=args.policy_freq_high,
-        policy_freq_low=args.policy_freq_low
-        )
-    return agent
-
-def spawn_td3(args, env):
-    state_dim, goal_dim, action_dim, scale = spawn_dims(env)
-    agent = TD3Agent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        goal_dim=goal_dim,
-        scale=scale,
-        model_path='_'.join([args.model_path, args.filename]),
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        )
-    return agent
 
 class ReplayBuffer():
     def __init__(self, state_dim, goal_dim, action_dim, buffer_size, batch_size):

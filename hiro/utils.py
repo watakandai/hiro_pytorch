@@ -30,8 +30,8 @@ class Logger():
     def write(self, name, value, index):
         self.writer.add_scalar(name, value, index)
 
-def _is_update(episode, freq):
-    if episode!=0 and episode%freq==0:
+def _is_update(episode, freq, ignore=0, rem=0):
+    if episode!=ignore and episode%freq==rem:
         return True
     return False
 
