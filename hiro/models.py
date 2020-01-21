@@ -21,7 +21,7 @@ from hiro.utils import _is_update
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class TD3Actor(nn.Module):
-    def __init__(self, state_dim, goal_dim, action_dim, scale):
+    def __init__(self, state_dim, goal_dim, action_dim, scale=None):
         super(TD3Actor, self).__init__()
         if scale is None:
             scale = torch.ones(state_dim)
@@ -59,7 +59,7 @@ class TD3Critic(nn.Module):
 
         return q
 
-class TD3(object):
+class TD3Controller(object):
     def __init__(
             self,
             state_dim,
@@ -75,7 +75,7 @@ class TD3(object):
             gamma=0.99,
             policy_freq=2,
             tau=0.005):
-        self.name = ''
+        self.name = 'td3'
         self.scale = scale
         self.model_path = model_path
 
@@ -114,11 +114,12 @@ class TD3(object):
             target_param.data.copy_(tau * origin_param.data + (1.0 - tau) * target_param.data)
 
     def save(self, episode):
+        # create episode directory. (e.g. model/2000)
         model_path = os.path.join(self.model_path, str(episode))
+        if not os.path.exists(model_path):
+            os.makedirs(model_path)
 
-        if not os.path.exists(os.path.dirname(model_path)):
-            os.mkdir(os.path.dirname(model_path))
-
+        # save file (e.g. model/2000/high_actor.h)
         torch.save(
             self.actor.state_dict(), 
             os.path.join(model_path, self.name+"_actor.h5")
@@ -135,7 +136,7 @@ class TD3(object):
     def load(self, episode):
         # episode is -1, then read most updated
         if episode<0:
-            episode_list = map(int, glob.glob(self.model_path))
+            episode_list = map(int, os.listdir(self.model_path))
             episode = max(episode_list)
 
         model_path = os.path.join(self.model_path, str(episode)) 
@@ -194,9 +195,11 @@ class TD3(object):
             self._update_target_network(self.critic2_target, self.critic2, self.tau)
             self._update_target_network(self.actor_target, self.actor, self.tau)
 
-            return {'actor_loss'+self.name: actor_loss, 'critic_loss'+self.name: critic_loss}
+            return {'actor_loss_'+self.name: actor_loss, 'critic_loss_'+self.name: critic_loss}, \
+                    {'td_error_'+self.name: td_error}
 
-        return {'critic_loss'+self.name: critic_loss}
+        return {'critic_loss_'+self.name: critic_loss}, \
+                    {'td_error_'+self.name: td_error}
 
     def train(self, replay_buffer, iterations=1):
         states, goals, actions, n_states, rewards, not_done = replay_buffer.sample()
@@ -231,7 +234,7 @@ class TD3(object):
         var = torch.ones(actions.size()).to(device)
         return torch.normal(mean, self.expl_noise*var)
 
-class HigherController(TD3):
+class HigherController(TD3Controller):
     def __init__(
         self,
         state_dim,
@@ -252,7 +255,7 @@ class HigherController(TD3):
             actor_lr, critic_lr, expl_noise, policy_noise,
             noise_clip, gamma, policy_freq, tau
         )
-        self.name = '_high'
+        self.name = 'high'
         self.action_dim = action_dim
 
     def off_policy_corrections(self, low_con, batch_size, sgoals, states, actions, candidate_goals=8):
@@ -325,7 +328,7 @@ class HigherController(TD3):
         actions = get_tensor(actions)
         return self._train(states, goals, actions, rewards, n_states, goals, not_done)
 
-class LowerController(TD3):
+class LowerController(TD3Controller):
     def __init__(
         self,
         state_dim,
@@ -346,7 +349,7 @@ class LowerController(TD3):
             actor_lr, critic_lr, expl_noise, policy_noise,
             noise_clip, gamma, policy_freq, tau
         )
-        self.name = '_low'
+        self.name = 'low'
 
     def train(self, replay_buffer):
         if not self._initialized:
@@ -375,11 +378,50 @@ class Agent():
     def end_step(self):
         raise NotImplementedError
 
-    def end_episode(self, episode, logger):
+    def end_episode(self, episode, logger=None):
         raise NotImplementedError
     
-    def evaluate_policy(self, env, eval_episodes, render, save_video, sleep):
-        raise NotImplementedError
+    def evaluate_policy(self, env, eval_episodes=10, render=False, save_video=False, sleep=-1):
+        if save_video:
+            from OpenGL import GL
+            env = gym.wrappers.Monitor(env, directory='video',
+                                    write_upon_reset=True, force=True, resume=True, mode='evaluation')
+            render = False
+
+        success = 0
+        rewards = []
+        env.evaluate = True
+        for e in range(eval_episodes):
+            obs = env.reset()
+            fg = obs['desired_goal']
+            s = obs['observation']
+            done = False
+            reward_episode_sum = 0
+            step = 0
+            
+            self.set_final_goal(fg)
+
+            while not done:
+                if render:
+                    env.render()
+                if sleep>0:
+                    time.sleep(sleep)
+
+                a, r, n_s, done = self.step(s, env, step)
+                reward_episode_sum += r
+                
+                s = n_s
+                step += 1
+                self.end_step()
+            else:
+                error = np.sqrt(np.sum(np.square(fg-s[:2])))
+                print('Goal, Curr: (%02.2f, %02.2f, %02.2f, %02.2f)     Error:%.2f'%(fg[0], fg[1], s[0], s[1], error))
+                rewards.append(reward_episode_sum)
+                success += 1 if error <=5 else 0
+                self.end_episode(e)
+
+        env.evaluate = False
+        return np.array(rewards), success/eval_episodes
 
 class TD3Agent(Agent):
     def __init__(
@@ -388,13 +430,13 @@ class TD3Agent(Agent):
         action_dim,
         goal_dim,
         scale,
-        model_save_freq,
         model_path,
+        model_save_freq,
         buffer_size,
         batch_size,
         start_training_steps):
 
-        self.con = TD3(
+        self.con = TD3Controller(
             state_dim=state_dim,
             goal_dim=goal_dim,
             action_dim=action_dim,
@@ -412,12 +454,9 @@ class TD3Agent(Agent):
         self.model_save_freq = model_save_freq
         self.start_training_steps = start_training_steps
 
-    def set_final_goal(self, fg):
-        self.fg = fg
-
     def step(self, s, env, step, global_step=0, explore=False):
         if explore:
-            if global_step <= self.start_training_steps:
+            if global_step < self.start_training_steps:
                 a = env.action_space.sample()
             else:
                 a = self._choose_action_with_noise(s)
@@ -444,47 +483,16 @@ class TD3Agent(Agent):
     def end_step(self):
         pass
 
-    def end_episode(self, episode, logger):
-        if _is_update(episode, self.model_save_freq):
-            self.save(episode=episode)
+    def end_episode(self, episode, logger=None):
+        if logger:
+            if _is_update(episode, self.model_save_freq):
+                self.save(episode=episode)
 
     def save(self, episode):
         self.con.save(episode)
 
     def load(self, episode):
         self.con.load(episode)
-
-    def evaluate_policy(self, env, subgoal, eval_episodes=10, render=False, save_video=False, sleep=-1):
-        if save_video:
-            from OpenGL import GL
-            env = gym.wrappers.Monitor(env, directory='video',
-                                    write_upon_reset=True, force=True, resume=True, mode='evaluation')
-            render = False
-
-        success = 0
-        rewards = []
-        for e in range(eval_episodes):
-            obs = env.reset()
-            fg = obs['desired_goal']
-            s = obs['observation']
-            done = False
-            reward_episode_sum = 0
-
-            while not done:
-                if render:
-                    env.render()
-                if sleep>0:
-                    time.sleep(sleep)
-                a = self.choose_action(s, fg)
-                obs, r, done, _ = env.step(a)
-                s = obs['observation']
-                reward_episode_sum += r
-            else:
-                error = np.sqrt(np.sum(np.square(fg-s[:2])))
-                rewards.append(reward_episode_sum)
-                success += 1 if error <=5 else 0
-
-        return np.array(rewards), success/eval_episodes
 
 class HiroAgent(Agent):
     def __init__(
@@ -496,13 +504,13 @@ class HiroAgent(Agent):
         start_training_steps,
         model_save_freq,
         model_path,
-        buffer_size=200000,
-        batch_size=100,
-        buffer_freq=10,
-        train_freq=10,
-        reward_scaling=0.1,
-        policy_freq_high=2,
-        policy_freq_low=2):
+        buffer_size,
+        batch_size,
+        buffer_freq,
+        train_freq,
+        reward_scaling,
+        policy_freq_high,
+        policy_freq_low):
 
         self.subgoal = Subgoal()
         subgoal_dim = self.subgoal.action_dim
@@ -550,21 +558,19 @@ class HiroAgent(Agent):
         self.train_freq = train_freq
         self.reward_scaling = reward_scaling
         self.episode_subreward = 0
+        self.sr = 0
 
-        self.buf = None
+        self.buf = [None, None, None, 0, None, None, [], []]
         self.fg = np.array([0,0])
         self.sg = self.subgoal.action_space.sample()
 
         self.start_training_steps = start_training_steps
 
-    def set_final_goal(self, fg):
-        self.fg = fg
-
     def step(self, s, env, step, global_step=0, explore=False):
         ## Lower Level Controller
         if explore:
             # Take random action for start_training_steps
-            if global_step <= self.start_training_steps:
+            if global_step < self.start_training_steps:
                 a = env.action_space.sample()
             else:
                 a = self._choose_action_with_noise(s, self.sg)
@@ -578,7 +584,7 @@ class HiroAgent(Agent):
         ## Higher Level Controller
         # Take random action for start_training steps
         if explore:
-            if global_step <= self.start_training_steps:
+            if global_step < self.start_training_steps:
                 n_sg = self.subgoal.action_space.sample()
             else:
                 n_sg = self._choose_subgoal_with_noise(step, s, self.sg, n_s)
@@ -598,7 +604,7 @@ class HiroAgent(Agent):
 
         # High Replay Buffer
         if _is_update(step, self.buffer_freq, rem=1):
-            if self.buf:
+            if len(self.buf[6]) == self.buffer_freq:
                 self.buf[4] = s
                 self.buf[5] = float(d)
                 self.replay_buffer_high.append(
@@ -619,22 +625,25 @@ class HiroAgent(Agent):
 
     def train(self, global_step):
         losses = {}
+        td_errors = {}
 
-        if global_step > self.start_training_steps:
-            loss = self.low_con.train(self.replay_buffer_low)
+        if global_step >= self.start_training_steps:
+            loss, td_error = self.low_con.train(self.replay_buffer_low)
             losses.update(loss)
+            td_errors.update(td_error)
 
             if global_step % self.train_freq == 0:
-                loss = self.high_con.train(self.replay_buffer_high, self.low_con)
+                loss, td_error = self.high_con.train(self.replay_buffer_high, self.low_con)
                 losses.update(loss)
+                td_errors.update(td_error)
 
-        return losses
+        return losses, td_errors
 
     def _choose_action_with_noise(self, s, sg):
         return self.low_con.policy_with_noise(s, sg)
 
     def _choose_subgoal_with_noise(self, step, s, sg, n_s):
-        if step % self.buffer_freq == 1:
+        if step % self.buffer_freq == 0: # Should be zero
             sg = self.high_con.policy_with_noise(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
@@ -645,7 +654,7 @@ class HiroAgent(Agent):
         return self.low_con.policy(s, sg)
 
     def _choose_subgoal(self, step, s, sg, n_s):
-        if step % self.buffer_freq == 1:
+        if step % self.buffer_freq == 0:
             sg = self.high_con.policy(s, self.fg)
         else:
             sg = self.subgoal_transition(s, sg, n_s)
@@ -663,14 +672,18 @@ class HiroAgent(Agent):
         self.episode_subreward += self.sr
         self.sg = self.n_sg
 
-    def end_episode(self, episode, logger):
-        # Save Model
-        if _is_update(episode, self.model_save_freq):
-            self.save(episode=episode)
+    def end_episode(self, episode, logger=None):
+        if logger: 
+            # log
+            logger.write('reward/Intrinsic Reward', self.episode_subreward, episode)
 
-        logger.write('reward/Intrinsic Reward', self.episode_subreward, episode)
+            # Save Model
+            if _is_update(episode, self.model_save_freq):
+                self.save(episode=episode)
+
         self.episode_subreward = 0
-        self.buf = None
+        self.sr = 0
+        self.buf = [None, None, None, 0, None, None, [], []]
 
     def save(self, episode):
         self.low_con.save(episode)
@@ -679,46 +692,3 @@ class HiroAgent(Agent):
     def load(self, episode):
         self.low_con.load(episode)
         self.high_con.load(episode)
-
-    def evaluate_policy(self, env, eval_episodes=10, render=False, save_video=False, sleep=-1):
-        if save_video:
-            from OpenGL import GL
-            env = gym.wrappers.Monitor(env, directory='video',
-                                    write_upon_reset=True, force=True, resume=True, mode='evaluation')
-            render = False
-
-        env.evaluate = True
-        rewards = []
-        success = 0
-        for e in range(eval_episodes):
-            obs = env.reset()
-            fg = obs['desired_goal']
-            s = obs['observation']
-            done = False
-            
-            step = 1
-            reward_episode_sum = 0
-
-            self.set_final_goal(fg)
-
-            while not done:
-                if render:
-                    env.render()
-                if sleep>0:
-                    time.sleep(sleep)
-
-                a, r, n_s, done = self.step(s, env, step)
-                
-                s = n_s
-                reward_episode_sum += r
-                step += 1
-            else:
-                error = np.sqrt(np.sum(np.square(fg-s[:2])))
-                print('L2 Norm: %.2f'%(error))
-                print('Final Goal: (%02.2f, %02.2f)'%(fg[0], fg[1]))
-                print('Curr  Goal: (%02.2f, %02.2f)'%(s[0], s[1]))
-                rewards.append(reward_episode_sum)
-                success += 1 if error <=5 else 0
-
-        env.evaluate = False
-        return np.array(rewards), success/eval_episodes

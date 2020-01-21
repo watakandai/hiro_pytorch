@@ -1,3 +1,5 @@
+import os 
+import csv
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -71,3 +73,22 @@ class ReplayBuffer():
             torch.FloatTensor(self.not_done[ind]).to(self.device),
         )
 
+def record_experience_to_csv(args, experiment_name, csv_name='experiments.csv'):
+    # append DATE_TIME to dict
+    d = vars(args)
+    d['date'] = experiment_name
+
+    if os.path.exists(csv_name):
+        # Save Dictionary to a csv
+        with open(csv_name, 'a') as f:
+            w = csv.DictWriter(f, list(d.keys()))
+            w.writerow(d)
+    else:
+        # Save Dictionary to a csv
+        with open(csv_name, 'w') as f:
+            w = csv.DictWriter(f, list(d.keys()))
+            w.writeheader()
+            w.writerow(d)
+
+def listdirs(directory):
+ return [name for name in os.listdir(directory) if os.path.isdir(os.path.join(directory, name))]
