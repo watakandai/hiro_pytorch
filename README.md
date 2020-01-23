@@ -42,31 +42,30 @@ python main.py --eval --td3
 Blue is HIRO and orange is TD3
 
 ## Succss Rate
-
-![](media/Success_Rate.svg)
+<img src="media/Success_Rate.svg" alt="Success_Rate" width="400"/>
 
 ## Reward
-![](media/reward_Reward.svg)
+<img src="media/reward_Reward.svg" alt="reward_Reward" width="400"/>
 
 ## Intrinsic Reward
-![](media/reward_Intrinsic_Reward.svg)
+<img src="media/reward_Intrinsic_Reward.svg" alt="reward_Intrinsic_Reward" width="400"/>
 
 ## Losses
-Higher Controller Actor
+Higher Controller Actor <br>
 <img src="media/loss_actor_loss_high.svg" alt="loss_actor_loss_high" width="400"/>
 
-Higher Controller Critic
+Higher Controller Critic<br>
 <img src="media/loss_critic_loss_high.svg" alt="loss_critic_loss_high" width="400"/>
 
-Lower Controller Actor
+Lower Controller Actor<br>
 <img src="media/loss_actor_loss_low.svg" alt="loss_actor_loss_low" width="400"/>
 
-Lower Controller Critic
+Lower Controller Critic<br>
 <img src="media/loss_critic_loss_low.svg" alt="loss_critic_loss_low" width="400"/>
 
-TD3 Controller Actor
+TD3 Controller Actor<br>
 <img src="media/loss_actor_loss_td3.svg" alt="loss_actor_loss_td3" width="400"/>
 
-TD3 Controller Critic
+TD3 Controller Critic<br>
 <img src="media/loss_critic_loss_td3.svg" alt="loss_critic_loss_td3" width="400"/>
 
