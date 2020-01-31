@@ -232,7 +232,8 @@ class TD3Controller(object):
     def _sample_exploration_noise(self, actions):
         mean = torch.zeros(actions.size()).to(device)
         var = torch.ones(actions.size()).to(device)
-        return torch.normal(mean, self.expl_noise*var)
+        expl_noise = self.expl_noise - (self.expl_noise/1200)*self.total_it // 10000
+        return torch.normal(mean, expl_noise*var)
 
 class HigherController(TD3Controller):
     def __init__(
