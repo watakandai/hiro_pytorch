@@ -113,6 +113,7 @@ if __name__ == '__main__':
     parser.add_argument('--start_training_steps', default=2500, type=int, help='Unit = Global Step')
     parser.add_argument('--writer_freq', default=25, type=int, help='Unit = Global Step')
     # Training (Model Saving)
+    parser.add_argument('--subgoal_dim', default=15, type=int)
     parser.add_argument('--load_episode', default=-1, type=int)
     parser.add_argument('--model_save_freq', default=2000, type=int, help='Unit = Episodes')
     parser.add_argument('--print_freq', default=250, type=int, help='Unit = Episode')
@@ -168,6 +169,7 @@ if __name__ == '__main__':
             state_dim=state_dim,
             action_dim=action_dim,
             goal_dim=goal_dim,
+            subgoal_dim=args.subgoal_dim,
             scale_low=scale,
             start_training_steps=args.start_training_steps,
             model_path=os.path.join(args.model_path, experiment_name),
