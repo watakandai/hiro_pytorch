@@ -108,13 +108,10 @@ class HighReplayBuffer(ReplayBuffer):
 
 class SubgoalActionSpace(object):
     def __init__(self, dim):
-        self.shape = (dim,1)
-
-        if dim == 15:
-            self.low = np.array([-10, -10, -0.5, -1, -1, -1, -1,
+        limits = np.array([-10, -10, -0.5, -1, -1, -1, -1,
                     -0.5, -0.3, -0.5, -0.3, -0.5, -0.3, -0.5, -0.3])
-        else:
-            self.low = np.array([-10, -10])
+        self.shape = (dim,1)
+        self.low = limits[:dim]
         self.high = -self.low
 
     def sample(self):
