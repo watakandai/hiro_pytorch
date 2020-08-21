@@ -1,4 +1,4 @@
-# What
+# Overview
 An implementation of [Data-Efficient Hierarchical Reinforcement Learning](https://arxiv.org/pdf/1805.08296.pdf) (HIRO) in PyTorch.
 ![Demonstration](media/demo.gif)
 
