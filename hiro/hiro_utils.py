@@ -115,7 +115,7 @@ class SubgoalActionSpace(object):
         self.high = -self.low
 
     def sample(self):
-        return (self.high - self.low) * np.random.sample() + self.low
+        return (self.high - self.low) * np.random.sample(self.high.shape) + self.low
 
 class Subgoal(object):
     def __init__(self, dim=15):
